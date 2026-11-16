@@ -25,7 +25,7 @@
 </style>
 </head>
 <body>
-<h1>Despensa - Teste de leitura de códigos <span class="small">v2</span></h1>
+<h1>Despensa - Teste de leitura de códigos <span class="small">v2.1</span></h1>
 <div class="card small" id="env">Verificando o ambiente...</div>
 
 <div class="card">
@@ -49,6 +49,7 @@
   <table id="tab"><thead><tr><th>Código</th><th>Origem</th><th>Tempo</th></tr></thead><tbody></tbody></table>
   <button id="btnCopiar">Copiar lista</button>
   <button id="btnBaixar" class="sec">Baixar .txt</button>
+  <button id="btnCsv" class="sec">Baixar tabela (.csv)</button>
   <button id="btnLimpar" class="sec">Limpar</button>
 </div>
 
@@ -90,7 +91,7 @@ function mensagem(t, cls){ var m = $("msg"); m.textContent = t; m.className = "s
 function registrar(codigo, origem, ms){
   if (!gtinValido(codigo)){ mensagem("Leitura descartada (dígito verificador inválido): " + codigo, "bad"); return false; }
   if (lista.some(function(x){return x.codigo === codigo;})){ mensagem("Já está na lista: " + codigo, "bad"); return false; }
-  lista.push({codigo:codigo, origem:origem, ms:ms});
+  lista.push({codigo:codigo, origem:origem, ms:ms, quando:new Date().toLocaleString("pt-BR")});
   salvar(); desenhar(); mensagem("Lido: " + codigo, "ok");
   if (navigator.vibrate) navigator.vibrate(60);
   return true;
@@ -182,13 +183,20 @@ $("btnIniciar").onclick = iniciar;
 $("btnParar").onclick = parar;
 $("btnAdd").onclick = function(){ var c = $("manual").value.replace(/\D/g,""); if (c && registrar(c, "digitado", null)) $("manual").value = ""; };
 $("btnCopiar").onclick = function(){
-  var t = lista.map(function(x){return x.codigo;}).join("\n");
+  var t = lista.map(function(x){return x.codigo;}).join("\n"); /* so codigos */
   if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(function(){ mensagem("Lista copiada.", "ok"); }, function(){ mensagem("Não consegui copiar; use Baixar.", "bad"); });
   else mensagem("Cópia indisponível; use Baixar.", "bad");
 };
 $("btnBaixar").onclick = function(){
   var b = new Blob([lista.map(function(x){return x.codigo;}).join("\n")], {type:"text/plain"});
   var a = document.createElement("a"); a.href = URL.createObjectURL(b); a.download = "codigos.txt"; a.click();
+};
+$("btnCsv").onclick = function(){
+  var linhas = ["codigo;origem;tempo_s;data_hora"].concat(lista.map(function(x){
+    return [x.codigo, x.origem, x.ms==null ? "" : (x.ms/1000).toFixed(1).replace(".", ","), x.quando || ""].join(";");
+  }));
+  var b = new Blob(["\ufeff" + linhas.join("\n")], {type:"text/csv"});
+  var a = document.createElement("a"); a.href = URL.createObjectURL(b); a.download = "leituras.csv"; a.click();
 };
 $("btnLimpar").onclick = function(){ if (confirm("Apagar a lista?")){ lista = []; salvar(); desenhar(); } };
 
