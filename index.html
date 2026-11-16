@@ -1,0 +1,172 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Despensa - Teste de leitura</title>
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Despensa teste">
+<meta name="theme-color" content="#1f6f5b">
+<style>
+  body{font-family:-apple-system,system-ui,sans-serif;margin:0;padding:12px;background:#f5f7f6;color:#1a1a1a}
+  h1{font-size:18px;margin:4px 0 8px}
+  .card{background:#fff;border-radius:10px;padding:10px;margin-bottom:10px;box-shadow:0 1px 3px #0002}
+  video{width:100%;max-height:45vh;background:#000;border-radius:8px;display:block}
+  button{font-size:16px;padding:10px 14px;border-radius:8px;border:0;background:#1f6f5b;color:#fff;margin:4px 4px 0 0}
+  button.sec{background:#e3e8e6;color:#1a1a1a}
+  input{font-size:16px;padding:9px;border:1px solid #bbb;border-radius:8px;width:60%}
+  table{width:100%;border-collapse:collapse;font-size:14px}
+  td,th{padding:4px;border-bottom:1px solid #eee;text-align:left}
+  .ok{color:#17803d}.bad{color:#b42318}.small{font-size:13px;color:#555}
+  #msg{font-weight:600}
+</style>
+</head>
+<body>
+<h1>Despensa - Teste de leitura de códigos</h1>
+<div class="card small" id="env">Verificando o ambiente...</div>
+
+<div class="card">
+  <video id="video" playsinline muted autoplay></video>
+  <div>
+    <button id="btnIniciar">Ligar a câmera</button>
+    <button id="btnParar" class="sec">Desligar</button>
+  </div>
+  <div id="msg" class="small">Aponte para o código de barras. Cada leitura válida entra na lista.</div>
+</div>
+
+<div class="card">
+  <b>Digitar um código</b><br>
+  <input id="manual" inputmode="numeric" placeholder="ex.: 7891234567895">
+  <button id="btnAdd" class="sec">Adicionar</button>
+</div>
+
+<div class="card">
+  <b>Lista (<span id="qtd">0</span>)</b>
+  <div class="small" id="stats"></div>
+  <table id="tab"><thead><tr><th>Código</th><th>Origem</th><th>Tempo</th></tr></thead><tbody></tbody></table>
+  <button id="btnCopiar">Copiar lista</button>
+  <button id="btnBaixar" class="sec">Baixar .txt</button>
+  <button id="btnLimpar" class="sec">Limpar</button>
+</div>
+
+<script src="https://unpkg.com/@zxing/library@0.21.3/umd/index.min.js"></script>
+<script>
+"use strict";
+var $ = function(id){ return document.getElementById(id); };
+var lista = [];             // {codigo, origem, ms}
+var stream = null, ativo = false, tInicio = 0, ultimo = {c:"", t:0};
+var motor = "";
+
+function gtinValido(c){
+  if (!/^\d+$/.test(c) || [8,12,13,14].indexOf(c.length) < 0) return false;
+  var soma = 0, corpo = c.slice(0,-1), dv = +c.slice(-1);
+  for (var i = 0; i < corpo.length; i++){
+    var d = +corpo[corpo.length-1-i];
+    soma += d * (i % 2 === 0 ? 3 : 1);
+  }
+  return ((10 - soma % 10) % 10) === dv;
+}
+function salvar(){ try{ localStorage.setItem("lista", JSON.stringify(lista)); }catch(e){} }
+function carregar(){ try{ lista = JSON.parse(localStorage.getItem("lista")||"[]"); }catch(e){ lista = []; } }
+
+function desenhar(){
+  var tb = document.querySelector("#tab tbody"); tb.innerHTML = "";
+  lista.forEach(function(x){
+    var tr = document.createElement("tr");
+    tr.innerHTML = "<td>"+x.codigo+"</td><td>"+x.origem+"</td><td>"+(x.ms==null?"":(x.ms/1000).toFixed(1)+" s")+"</td>";
+    tb.appendChild(tr);
+  });
+  $("qtd").textContent = lista.length;
+  var tempos = lista.filter(function(x){return x.ms!=null;}).map(function(x){return x.ms;});
+  $("stats").textContent = tempos.length
+    ? "Tempo médio da câmera: " + (tempos.reduce(function(a,b){return a+b;},0)/tempos.length/1000).toFixed(1) + " s, em " + tempos.length + " leituras."
+    : "";
+}
+function mensagem(t, cls){ var m = $("msg"); m.textContent = t; m.className = "small " + (cls||""); }
+
+function registrar(codigo, origem, ms){
+  if (!gtinValido(codigo)){ mensagem("Leitura descartada (dígito verificador inválido): " + codigo, "bad"); return false; }
+  if (lista.some(function(x){return x.codigo === codigo;})){ mensagem("Já está na lista: " + codigo, "bad"); return false; }
+  lista.push({codigo:codigo, origem:origem, ms:ms});
+  salvar(); desenhar(); mensagem("Lido: " + codigo, "ok");
+  if (navigator.vibrate) navigator.vibrate(60);
+  return true;
+}
+function aoLer(codigo){
+  var agora = Date.now();
+  if (codigo === ultimo.c && agora - ultimo.t < 3000) return;   // evita repetir a mesma leitura
+  ultimo = {c:codigo, t:agora};
+  var ms = agora - tInicio;
+  if (registrar(codigo, "câmera (" + motor + ")", ms)) tInicio = Date.now();
+}
+
+function ambiente(){
+  var standalone = (window.navigator.standalone === true) || window.matchMedia("(display-mode: standalone)").matches;
+  var partes = [
+    "Modo: " + (standalone ? "app instalado (tela cheia)" : "navegador"),
+    "Endereço seguro (https): " + (window.isSecureContext ? "sim" : "NÃO, a câmera não funcionará"),
+    "Câmera disponível: " + ((navigator.mediaDevices && navigator.mediaDevices.getUserMedia) ? "sim" : "NÃO"),
+    "Leitor nativo (BarcodeDetector): " + (("BarcodeDetector" in window) ? "sim" : "não"),
+    "Biblioteca ZXing carregada: " + ((window.ZXing) ? "sim" : "NÃO (sem internet ou bloqueada)")
+  ];
+  $("env").innerHTML = partes.join("<br>") + "<br>" + navigator.userAgent;
+}
+
+async function iniciar(){
+  if (ativo) return;
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia){ mensagem("Este navegador não oferece câmera.", "bad"); return; }
+  try{
+    stream = await navigator.mediaDevices.getUserMedia({video:{facingMode:{ideal:"environment"}, width:{ideal:1280}, height:{ideal:720}}, audio:false});
+  }catch(e){ mensagem("Câmera não liberada: " + e.name + " - " + e.message, "bad"); return; }
+  var v = $("video"); v.srcObject = stream;
+  try{ await v.play(); }catch(e){}
+  ativo = true; tInicio = Date.now();
+
+  if ("BarcodeDetector" in window){
+    motor = "nativo";
+    var det = new BarcodeDetector({formats:["ean_13","ean_8","upc_a","upc_e"]});
+    (function laco(){
+      if (!ativo) return;
+      det.detect(v).then(function(r){ if (r && r.length) aoLer(r[0].rawValue); }).catch(function(){}).then(function(){ setTimeout(laco, 200); });
+    })();
+    mensagem("Câmera ligada (leitor nativo).");
+  } else if (window.ZXing){
+    motor = "ZXing";
+    var hints = new Map();
+    hints.set(ZXing.DecodeHintType.POSSIBLE_FORMATS, [ZXing.BarcodeFormat.EAN_13, ZXing.BarcodeFormat.EAN_8, ZXing.BarcodeFormat.UPC_A, ZXing.BarcodeFormat.UPC_E]);
+    hints.set(ZXing.DecodeHintType.TRY_HARDER, true);
+    window.__leitor = new ZXing.BrowserMultiFormatReader(hints, 300);
+    window.__leitor.decodeFromStream(stream, v, function(res){ if (res) aoLer(res.getText()); });
+    mensagem("Câmera ligada (ZXing).");
+  } else {
+    mensagem("Câmera ligada, mas nenhum leitor disponível. Use a digitação.", "bad");
+  }
+}
+function parar(){
+  ativo = false;
+  try{ if (window.__leitor){ window.__leitor.reset(); window.__leitor = null; } }catch(e){}
+  if (stream){ stream.getTracks().forEach(function(t){ t.stop(); }); stream = null; }
+  $("video").srcObject = null; mensagem("Câmera desligada.");
+}
+
+$("btnIniciar").onclick = iniciar;
+$("btnParar").onclick = parar;
+$("btnAdd").onclick = function(){ var c = $("manual").value.replace(/\D/g,""); if (c && registrar(c, "digitado", null)) $("manual").value = ""; };
+$("btnCopiar").onclick = function(){
+  var t = lista.map(function(x){return x.codigo;}).join("\n");
+  if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(function(){ mensagem("Lista copiada.", "ok"); }, function(){ mensagem("Não consegui copiar; use Baixar.", "bad"); });
+  else mensagem("Cópia indisponível; use Baixar.", "bad");
+};
+$("btnBaixar").onclick = function(){
+  var b = new Blob([lista.map(function(x){return x.codigo;}).join("\n")], {type:"text/plain"});
+  var a = document.createElement("a"); a.href = URL.createObjectURL(b); a.download = "codigos.txt"; a.click();
+};
+$("btnLimpar").onclick = function(){ if (confirm("Apagar a lista?")){ lista = []; salvar(); desenhar(); } };
+
+carregar(); desenhar(); window.addEventListener("load", ambiente);
+</script>
+</body>
+</html>
