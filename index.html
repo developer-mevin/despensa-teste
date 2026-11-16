@@ -25,7 +25,7 @@
 </style>
 </head>
 <body>
-<h1>Despensa - Teste de leitura de códigos <span class="small">v2.2</span></h1>
+<h1>Despensa - Teste de leitura de códigos <span class="small">v2.3</span></h1>
 <div class="card small" id="env">Verificando o ambiente...</div>
 
 <div class="card">
@@ -54,6 +54,7 @@
   <table id="tab"><thead><tr><th>Código</th><th>Origem</th><th>Tempo</th></tr></thead><tbody></tbody></table>
   <button id="btnCopiar">Copiar lista</button>
   <button id="btnBaixar" class="sec">Baixar .txt</button>
+  <button id="btnShare">Compartilhar tabela</button>
   <button id="btnCsv" class="sec">Baixar tabela (.csv)</button>
   <button id="btnLimpar" class="sec">Limpar</button>
 </div>
@@ -227,12 +228,26 @@ $("btnBaixar").onclick = function(){
   var b = new Blob([lista.map(function(x){return x.codigo;}).join("\n")], {type:"text/plain"});
   var a = document.createElement("a"); a.href = URL.createObjectURL(b); a.download = "codigos.txt"; a.click();
 };
-$("btnCsv").onclick = function(){
+function gerarCsv(){
   var linhas = ["codigo;origem;tempo_s;confirmacao;data_hora"].concat(lista.map(function(x){
     return [x.codigo, x.origem, x.ms==null ? "" : (x.ms/1000).toFixed(1).replace(".", ","), x.conf || "", x.quando || ""].join(";");
   }));
-  var b = new Blob(["\ufeff" + linhas.join("\n")], {type:"text/csv"});
+  return "\ufeff" + linhas.join("\n");
+}
+$("btnCsv").onclick = function(){
+  var b = new Blob([gerarCsv()], {type:"text/csv"});
   var a = document.createElement("a"); a.href = URL.createObjectURL(b); a.download = "leituras.csv"; a.click();
+};
+$("btnShare").onclick = function(){
+  if (!lista.length){ mensagem("A lista está vazia.", "bad"); return; }
+  var arq;
+  try{ arq = new File([gerarCsv()], "leituras.csv", {type:"text/csv"}); }catch(e){ mensagem("Este navegador não cria arquivos; use Baixar tabela.", "bad"); return; }
+  if (navigator.canShare && navigator.canShare({files:[arq]})){
+    navigator.share({files:[arq], title:"Leituras de códigos"}).then(function(){ mensagem("Compartilhado.", "ok"); })
+      .catch(function(e){ if (e && e.name !== "AbortError") mensagem("Não consegui compartilhar: " + e.name, "bad"); });
+  } else {
+    mensagem("Compartilhar arquivo não está disponível aqui; use Baixar tabela.", "bad");
+  }
 };
 $("btnLimpar").onclick = function(){ if (confirm("Apagar a lista?")){ lista = []; salvar(); desenhar(); } };
 
