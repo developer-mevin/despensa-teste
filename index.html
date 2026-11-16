@@ -25,7 +25,7 @@
 </style>
 </head>
 <body>
-<h1>Despensa - Teste de leitura de códigos</h1>
+<h1>Despensa - Teste de leitura de códigos <span class="small">v2</span></h1>
 <div class="card small" id="env">Verificando o ambiente...</div>
 
 <div class="card">
@@ -134,13 +134,39 @@ async function iniciar(){
     })();
     mensagem("Câmera ligada (leitor nativo).");
   } else if (window.ZXing){
-    motor = "ZXing";
+    motor = "ZXing 2 orientações";
     var hints = new Map();
     hints.set(ZXing.DecodeHintType.POSSIBLE_FORMATS, [ZXing.BarcodeFormat.EAN_13, ZXing.BarcodeFormat.EAN_8, ZXing.BarcodeFormat.UPC_A, ZXing.BarcodeFormat.UPC_E]);
     hints.set(ZXing.DecodeHintType.TRY_HARDER, true);
-    window.__leitor = new ZXing.BrowserMultiFormatReader(hints, 300);
-    window.__leitor.decodeFromStream(stream, v, function(res){ if (res) aoLer(res.getText()); });
-    mensagem("Câmera ligada (ZXing).");
+    var leitor = new ZXing.MultiFormatReader(); leitor.setHints(hints);
+    var cv = document.createElement("canvas"), cvR = document.createElement("canvas");
+    var ctx = cv.getContext("2d", {willReadFrequently:true}), ctxR = cvR.getContext("2d", {willReadFrequently:true});
+    function tentar(canvas){
+      try{
+        var fonte = new ZXing.HTMLCanvasElementLuminanceSource(canvas);
+        var bmp = new ZXing.BinaryBitmap(new ZXing.HybridBinarizer(fonte));
+        return leitor.decode(bmp).getText();
+      }catch(e){ return null; }
+    }
+    (function laco(){
+      if (!ativo) return;
+      var w = v.videoWidth, hh = v.videoHeight;
+      if (w && hh){
+        var esc = Math.min(1, 1280 / Math.max(w, hh));
+        var W = Math.round(w*esc), H = Math.round(hh*esc);
+        cv.width = W; cv.height = H; ctx.drawImage(v, 0, 0, W, H);
+        var r = tentar(cv);
+        if (!r){
+          cvR.width = H; cvR.height = W;
+          ctxR.setTransform(1,0,0,1,0,0); ctxR.translate(H, 0); ctxR.rotate(Math.PI/2);
+          ctxR.drawImage(v, 0, 0, W, H);
+          r = tentar(cvR);
+        }
+        if (r) aoLer(r);
+      }
+      setTimeout(laco, 150);
+    })();
+    mensagem("Câmera ligada (ZXing, tenta nas duas orientações).");
   } else {
     mensagem("Câmera ligada, mas nenhum leitor disponível. Use a digitação.", "bad");
   }
