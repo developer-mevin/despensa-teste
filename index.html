@@ -25,7 +25,7 @@
 </style>
 </head>
 <body>
-<h1>Despensa - Teste de leitura de códigos <span class="small">v2.1</span></h1>
+<h1>Despensa - Teste de leitura de códigos <span class="small">v2.2</span></h1>
 <div class="card small" id="env">Verificando o ambiente...</div>
 
 <div class="card">
@@ -34,7 +34,12 @@
     <button id="btnIniciar">Ligar a câmera</button>
     <button id="btnParar" class="sec">Desligar</button>
   </div>
-  <div id="msg" class="small">Aponte para o código de barras. Cada leitura válida entra na lista.</div>
+  <div id="msg" class="small">Aponte para o código de barras e mantenha parado por 1 ou 2 segundos: o código só entra depois de duas leituras iguais.</div>
+</div>
+
+<div class="card" id="aviso" style="display:none;background:#fff4e5">
+  <b id="avisoTxt"></b><br>
+  <button id="btnAceitar">Aceitar</button> <button id="btnDescartar" class="sec">Descartar</button>
 </div>
 
 <div class="card">
@@ -82,26 +87,54 @@ function desenhar(){
   });
   $("qtd").textContent = lista.length;
   var tempos = lista.filter(function(x){return x.ms!=null;}).map(function(x){return x.ms;});
+  var extra = " Descartadas por não repetir: " + ignoradas + "; com dígito inválido: " + invalidas + ".";
   $("stats").textContent = tempos.length
-    ? "Tempo médio da câmera: " + (tempos.reduce(function(a,b){return a+b;},0)/tempos.length/1000).toFixed(1) + " s, em " + tempos.length + " leituras."
-    : "";
+    ? "Tempo médio da câmera: " + (tempos.reduce(function(a,b){return a+b;},0)/tempos.length/1000).toFixed(1) + " s, em " + tempos.length + " leituras." + extra
+    : extra.trim();
 }
 function mensagem(t, cls){ var m = $("msg"); m.textContent = t; m.className = "small " + (cls||""); }
 
-function registrar(codigo, origem, ms){
+function registrar(codigo, origem, ms, conf){
   if (!gtinValido(codigo)){ mensagem("Leitura descartada (dígito verificador inválido): " + codigo, "bad"); return false; }
   if (lista.some(function(x){return x.codigo === codigo;})){ mensagem("Já está na lista: " + codigo, "bad"); return false; }
-  lista.push({codigo:codigo, origem:origem, ms:ms, quando:new Date().toLocaleString("pt-BR")});
+  lista.push({codigo:codigo, origem:origem, ms:ms, conf:conf || "manual", quando:new Date().toLocaleString("pt-BR")});
   salvar(); desenhar(); mensagem("Lido: " + codigo, "ok");
   if (navigator.vibrate) navigator.vibrate(60);
   return true;
 }
+var cand = null;            // candidato a leitura: {c, n, t}
+var pendente = null;        // codigo aguardando confirmacao de prefixo
+var ignoradas = 0;          // leituras que nao se repetiram
+var invalidas = 0;          // leituras com digito verificador invalido
+function prefixoBR(c){ return c.length === 13 && (c.slice(0,3) === "789" || c.slice(0,3) === "790"); }
+
 function aoLer(codigo){
+  if (pendente) return;                                   // aguardando decisao do usuario
   var agora = Date.now();
-  if (codigo === ultimo.c && agora - ultimo.t < 3000) return;   // evita repetir a mesma leitura
+  if (codigo === ultimo.c && agora - ultimo.t < 3000) return;   // acabou de ser processado
+  if (!gtinValido(codigo)){ invalidas++; return; }
+  if (cand && cand.c === codigo && agora - cand.t < 2500){
+    cand.n++; cand.t = agora;
+  } else {
+    if (cand && cand.n === 1) ignoradas++;                // leitura anterior nao se repetiu
+    cand = {c:codigo, n:1, t:agora};
+  }
+  if (cand.n < 2) return;                                  // exige 2 leituras iguais seguidas
+  cand = null;
   ultimo = {c:codigo, t:agora};
   var ms = agora - tInicio;
-  if (registrar(codigo, "câmera (" + motor + ")", ms)) tInicio = Date.now();
+  if (!prefixoBR(codigo)){
+    pendente = {codigo:codigo, ms:ms};
+    $("avisoTxt").textContent = "Código " + codigo + " tem prefixo " + codigo.slice(0,3) + " (não é 789 nem 790). Importado ou leitura errada. Confira a embalagem.";
+    $("aviso").style.display = "block";
+    return;
+  }
+  if (registrar(codigo, "câmera (" + motor + ")", ms, "2 leituras")) tInicio = Date.now();
+}
+function decidirPendente(aceitar){
+  var p = pendente; pendente = null; $("aviso").style.display = "none";
+  if (p && aceitar){ if (registrar(p.codigo, "câmera (" + motor + ")", p.ms, "prefixo aceito")) tInicio = Date.now(); }
+  else if (p){ mensagem("Descartado: " + p.codigo, "bad"); }
 }
 
 function ambiente(){
@@ -181,6 +214,9 @@ function parar(){
 
 $("btnIniciar").onclick = iniciar;
 $("btnParar").onclick = parar;
+$("btnAceitar").onclick = function(){ decidirPendente(true); };
+$("btnDescartar").onclick = function(){ decidirPendente(false); };
+setInterval(function(){ if (ativo) desenhar(); }, 2000);
 $("btnAdd").onclick = function(){ var c = $("manual").value.replace(/\D/g,""); if (c && registrar(c, "digitado", null)) $("manual").value = ""; };
 $("btnCopiar").onclick = function(){
   var t = lista.map(function(x){return x.codigo;}).join("\n"); /* so codigos */
@@ -192,8 +228,8 @@ $("btnBaixar").onclick = function(){
   var a = document.createElement("a"); a.href = URL.createObjectURL(b); a.download = "codigos.txt"; a.click();
 };
 $("btnCsv").onclick = function(){
-  var linhas = ["codigo;origem;tempo_s;data_hora"].concat(lista.map(function(x){
-    return [x.codigo, x.origem, x.ms==null ? "" : (x.ms/1000).toFixed(1).replace(".", ","), x.quando || ""].join(";");
+  var linhas = ["codigo;origem;tempo_s;confirmacao;data_hora"].concat(lista.map(function(x){
+    return [x.codigo, x.origem, x.ms==null ? "" : (x.ms/1000).toFixed(1).replace(".", ","), x.conf || "", x.quando || ""].join(";");
   }));
   var b = new Blob(["\ufeff" + linhas.join("\n")], {type:"text/csv"});
   var a = document.createElement("a"); a.href = URL.createObjectURL(b); a.download = "leituras.csv"; a.click();
