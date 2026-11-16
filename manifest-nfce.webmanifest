@@ -1,0 +1,13 @@
+{
+  "name": "Despensa - QR das notas",
+  "short_name": "QR notas",
+  "start_url": "./nfce.html",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#2548a0",
+  "theme_color": "#2548a0",
+  "icons": [
+    { "src": "icon-nfce-192.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "icon-nfce-512.png", "sizes": "512x512", "type": "image/png" }
+  ]
+}

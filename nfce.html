@@ -1,0 +1,281 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Despensa - Captura de QR da NFC-e</title>
+<link rel="manifest" href="manifest-nfce.webmanifest">
+<link rel="apple-touch-icon" href="apple-touch-icon-nfce.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="QR notas">
+<meta name="theme-color" content="#2548a0">
+<style>
+  body{font-family:-apple-system,system-ui,sans-serif;margin:0;padding:12px;background:#f5f7f6;color:#1a1a1a}
+  h1{font-size:18px;margin:4px 0 8px}
+  .card{background:#fff;border-radius:10px;padding:10px;margin-bottom:10px;box-shadow:0 1px 3px #0002}
+  video{width:100%;max-height:45vh;background:#000;border-radius:8px;display:block}
+  button{font-size:16px;padding:10px 14px;border-radius:8px;border:0;background:#1f6f5b;color:#fff;margin:4px 4px 0 0}
+  button.sec{background:#e3e8e6;color:#1a1a1a}
+  textarea{font-size:14px;padding:8px;border:1px solid #bbb;border-radius:8px;width:95%;height:64px}
+  table{width:100%;border-collapse:collapse;font-size:13px}
+  td,th{padding:4px;border-bottom:1px solid #eee;text-align:left;vertical-align:top}
+  .ok{color:#17803d}.bad{color:#b42318}.small{font-size:13px;color:#555}
+  #msg{font-weight:600}
+</style>
+</head>
+<body>
+<h1>Despensa - Captura de QR da NFC-e <span class="small">v1.0</span></h1>
+<div class="card small">Esta página só lê o QR Code da nota e guarda o endereço <b>neste aparelho</b>. Nada é enviado a lugar nenhum. A consulta da nota no portal continua sendo feita depois, uma por vez, no PC. Não coloque as listas geradas aqui em repositório público.</div>
+<div class="card small" id="env">Verificando o ambiente...</div>
+
+<div class="card">
+  <video id="video" playsinline muted autoplay></video>
+  <div>
+    <button id="btnIniciar">Ligar a câmera</button>
+    <button id="btnParar" class="sec">Desligar</button>
+  </div>
+  <div id="msg" class="small">Aponte para o QR Code do cupom (fica no rodapé do DANFE NFC-e) e mantenha parado.</div>
+</div>
+
+<div class="card" id="aviso" style="display:none;background:#fff4e5">
+  <b id="avisoTxt"></b><br>
+  <button id="btnAceitar">Aceitar mesmo assim</button> <button id="btnDescartar" class="sec">Descartar</button>
+</div>
+
+<div class="card">
+  <b>Colar endereços</b> <span class="small">(um por linha, vindos de mensagem ou e-mail)</span><br>
+  <textarea id="colar" placeholder="https://www.nfce.fazenda.sp.gov.br/NFCeConsultaPublica/Paginas/ConsultaQRCode.aspx?p=..."></textarea><br>
+  <button id="btnAdd" class="sec">Adicionar</button>
+</div>
+
+<div class="card">
+  <b>Notas (<span id="qtd">0</span>)</b>
+  <div class="small" id="stats"></div>
+  <table id="tab"><thead><tr><th>Mês</th><th>CNPJ da loja</th><th>Nº</th><th>Origem</th><th></th></tr></thead><tbody></tbody></table>
+  <button id="btnCopiar">Copiar endereços</button>
+  <button id="btnBaixar" class="sec">Baixar urls.txt</button>
+  <button id="btnShare">Compartilhar tabela</button>
+  <button id="btnCsv" class="sec">Baixar tabela (.csv)</button>
+  <button id="btnLimpar" class="sec">Limpar</button>
+</div>
+
+<script src="https://unpkg.com/@zxing/library@0.21.3/umd/index.min.js"></script>
+<script>
+"use strict";
+var $ = function(id){ return document.getElementById(id); };
+var lista = [];            // {chave, url, cnpj, aamm, serie, numero, origem, quando}
+var stream = null, ativo = false, ultimo = {c:"", t:0}, motor = "", pendente = null;
+
+/* ---------- regras da chave de acesso (44 digitos) ---------- */
+function dvChave(c43){
+  var soma = 0, peso = 2;
+  for (var i = c43.length - 1; i >= 0; i--){ soma += (+c43[i]) * peso; peso = peso === 9 ? 2 : peso + 1; }
+  var r = soma % 11;
+  return (r === 0 || r === 1) ? 0 : 11 - r;
+}
+function chaveValida(c){
+  return /^\d{44}$/.test(c) && dvChave(c.slice(0,43)) === +c[43];
+}
+/* extrai a chave do parametro p= (separado por | ou %7C) */
+function extrairChave(url){
+  var m = /[?&]p=([^&#\s]+)/i.exec(url);
+  if (!m) return null;
+  var p = m[1];
+  try{ p = decodeURIComponent(p); }catch(e){}
+  var chave = p.split("|")[0].replace(/\D/g, "");
+  return chave || null;
+}
+function descrever(chave){
+  return {
+    uf: chave.slice(0,2),
+    aamm: chave.slice(2,6),
+    cnpj: chave.slice(6,20),
+    modelo: chave.slice(20,22),
+    serie: String(parseInt(chave.slice(22,25),10)),
+    numero: String(parseInt(chave.slice(25,34),10))
+  };
+}
+function fmtMes(aamm){ return "20" + aamm.slice(0,2) + "-" + aamm.slice(2,4); }
+function fmtCnpj(c){ return c.replace(/^(\d{2})(\d{3})(\d{3})(\d{4})(\d{2})$/, "$1.$2.$3/$4-$5"); }
+
+/* ---------- lista ---------- */
+function salvar(){ try{ localStorage.setItem("notas_qr", JSON.stringify(lista)); }catch(e){} }
+function carregar(){ try{ lista = JSON.parse(localStorage.getItem("notas_qr")||"[]"); }catch(e){ lista = []; } }
+function mensagem(t, cls){ var m = $("msg"); m.textContent = t; m.className = "small " + (cls||""); }
+
+function desenhar(){
+  var tb = document.querySelector("#tab tbody"); tb.innerHTML = "";
+  lista.forEach(function(x, i){
+    var tr = document.createElement("tr");
+    tr.innerHTML = "<td>"+fmtMes(x.aamm)+"</td><td>"+fmtCnpj(x.cnpj)+"</td><td>"+x.numero+"</td><td>"+x.origem+"</td><td><button class='sec' data-i='"+i+"'>x</button></td>";
+    tb.appendChild(tr);
+  });
+  $("qtd").textContent = lista.length;
+  var lojas = {}; lista.forEach(function(x){ lojas[x.cnpj] = 1; });
+  $("stats").textContent = lista.length ? ("Lojas diferentes (por CNPJ): " + Object.keys(lojas).length + ".") : "";
+}
+document.querySelector("#tab tbody").addEventListener("click", function(e){
+  var i = e.target && e.target.getAttribute && e.target.getAttribute("data-i");
+  if (i != null){ lista.splice(+i, 1); salvar(); desenhar(); }
+});
+
+/* devolve {ok, motivo, aviso, nota} sem gravar */
+function analisar(texto){
+  var url = (texto || "").trim();
+  if (!/^https?:\/\//i.test(url)) return {ok:false, motivo:"não é um endereço (http/https)"};
+  var chave = extrairChave(url);
+  if (!chave) return {ok:false, motivo:"o endereço não traz o parâmetro p= com a chave da nota"};
+  if (!chaveValida(chave)) return {ok:false, motivo:"a chave de 44 dígitos é inválida (leitura incompleta ou errada)"};
+  var d = descrever(chave);
+  if (d.modelo !== "65") return {ok:false, motivo:"não é NFC-e (modelo " + d.modelo + ")"};
+  var aviso = null;
+  var host = ""; try{ host = new URL(url).hostname.toLowerCase(); }catch(e){}
+  if (host !== "www.nfce.fazenda.sp.gov.br" || d.uf !== "35") aviso = "Endereço fora do portal da NFC-e de São Paulo (" + host + ", UF " + d.uf + "). A extensão só abre o portal de SP.";
+  return {ok:true, aviso:aviso, nota:{chave:chave, url:url, cnpj:d.cnpj, aamm:d.aamm, serie:d.serie, numero:d.numero}};
+}
+function gravar(nota, origem){
+  if (lista.some(function(x){ return x.chave === nota.chave; })){ mensagem("Essa nota já está na lista (nº " + nota.numero + ").", "bad"); return false; }
+  nota.origem = origem; nota.quando = new Date().toLocaleString("pt-BR");
+  lista.push(nota); salvar(); desenhar();
+  mensagem("Nota guardada: " + fmtMes(nota.aamm) + ", loja " + fmtCnpj(nota.cnpj) + ", nº " + nota.numero + ".", "ok");
+  if (navigator.vibrate) navigator.vibrate(60);
+  return true;
+}
+function processar(texto, origem){
+  var r = analisar(texto);
+  if (!r.ok){ mensagem("Descartado: " + r.motivo + ".", "bad"); return false; }
+  if (r.aviso){
+    pendente = {nota:r.nota, origem:origem};
+    $("avisoTxt").textContent = r.aviso; $("aviso").style.display = "block"; return false;
+  }
+  return gravar(r.nota, origem);
+}
+function decidirPendente(aceitar){
+  var p = pendente; pendente = null; $("aviso").style.display = "none";
+  if (p && aceitar) gravar(p.nota, p.origem + ", fora de SP");
+  else if (p) mensagem("Descartado.", "bad");
+}
+function aoLer(texto){
+  if (pendente) return;
+  var agora = Date.now();
+  if (texto === ultimo.c && agora - ultimo.t < 4000) return;
+  ultimo = {c:texto, t:agora};
+  processar(texto, "câmera (" + motor + ")");
+}
+
+/* ---------- ambiente e camera ---------- */
+function ambiente(){
+  var standalone = (window.navigator.standalone === true) || window.matchMedia("(display-mode: standalone)").matches;
+  $("env").innerHTML = [
+    "Modo: " + (standalone ? "app instalado (tela cheia)" : "navegador"),
+    "Endereço seguro (https): " + (window.isSecureContext ? "sim" : "NÃO, a câmera não funcionará"),
+    "Câmera disponível: " + ((navigator.mediaDevices && navigator.mediaDevices.getUserMedia) ? "sim" : "NÃO"),
+    "Leitor nativo (BarcodeDetector): " + (("BarcodeDetector" in window) ? "sim" : "não"),
+    "Biblioteca ZXing carregada: " + ((window.ZXing) ? "sim" : "NÃO (sem internet ou bloqueada)")
+  ].join("<br>");
+}
+async function iniciar(){
+  if (ativo) return;
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia){ mensagem("Este navegador não oferece câmera.", "bad"); return; }
+  try{
+    stream = await navigator.mediaDevices.getUserMedia({video:{facingMode:{ideal:"environment"}, width:{ideal:1280}, height:{ideal:720}}, audio:false});
+  }catch(e){ mensagem("Câmera não liberada: " + e.name + " - " + e.message, "bad"); return; }
+  var v = $("video"); v.srcObject = stream;
+  try{ await v.play(); }catch(e){}
+  ativo = true;
+  if ("BarcodeDetector" in window){
+    motor = "nativo";
+    var det = new BarcodeDetector({formats:["qr_code"]});
+    (function laco(){
+      if (!ativo) return;
+      det.detect(v).then(function(r){ if (r && r.length) aoLer(r[0].rawValue); }).catch(function(){}).then(function(){ setTimeout(laco, 250); });
+    })();
+    mensagem("Câmera ligada (leitor nativo).");
+  } else if (window.ZXing){
+    motor = "ZXing";
+    var hints = new Map();
+    hints.set(ZXing.DecodeHintType.POSSIBLE_FORMATS, [ZXing.BarcodeFormat.QR_CODE]);
+    hints.set(ZXing.DecodeHintType.TRY_HARDER, true);
+    var leitor = new ZXing.MultiFormatReader(); leitor.setHints(hints);
+    var cv = document.createElement("canvas");
+    var ctx = cv.getContext("2d", {willReadFrequently:true});
+    (function laco(){
+      if (!ativo) return;
+      var w = v.videoWidth, hh = v.videoHeight;
+      if (w && hh){
+        var esc = Math.min(1, 1280 / Math.max(w, hh));
+        cv.width = Math.round(w*esc); cv.height = Math.round(hh*esc);
+        ctx.drawImage(v, 0, 0, cv.width, cv.height);
+        try{
+          var fonte = new ZXing.HTMLCanvasElementLuminanceSource(cv);
+          var bmp = new ZXing.BinaryBitmap(new ZXing.HybridBinarizer(fonte));
+          aoLer(leitor.decode(bmp).getText());
+        }catch(e){}
+      }
+      setTimeout(laco, 200);
+    })();
+    mensagem("Câmera ligada (ZXing).");
+  } else {
+    mensagem("Câmera ligada, mas nenhum leitor disponível. Use Colar endereços.", "bad");
+  }
+}
+function parar(){
+  ativo = false;
+  if (stream){ stream.getTracks().forEach(function(t){ t.stop(); }); stream = null; }
+  $("video").srcObject = null; mensagem("Câmera desligada.");
+}
+
+/* ---------- exportar ---------- */
+function gerarCsv(){
+  var linhas = ["chave;mes;cnpj_loja;serie;numero;origem;data_hora;url"].concat(lista.map(function(x){
+    return [x.chave, fmtMes(x.aamm), x.cnpj, x.serie, x.numero, x.origem, x.quando || "", x.url].join(";");
+  }));
+  return "﻿" + linhas.join("\n");
+}
+$("btnIniciar").onclick = iniciar;
+$("btnParar").onclick = parar;
+$("btnAceitar").onclick = function(){ decidirPendente(true); };
+$("btnDescartar").onclick = function(){ decidirPendente(false); };
+$("btnAdd").onclick = function(){
+  var linhas = $("colar").value.split(/\r?\n/).map(function(s){ return s.trim(); }).filter(Boolean);
+  if (!linhas.length) return;
+  var ok = 0, dup = 0, ruim = 0;
+  linhas.forEach(function(l){
+    var r = analisar(l);
+    if (!r.ok){ ruim++; return; }
+    if (lista.some(function(x){ return x.chave === r.nota.chave; })){ dup++; return; }
+    r.nota.origem = "colado" + (r.aviso ? ", fora de SP" : ""); r.nota.quando = new Date().toLocaleString("pt-BR");
+    lista.push(r.nota); ok++;
+  });
+  salvar(); desenhar(); $("colar").value = "";
+  mensagem("Adicionadas: " + ok + ". Já existiam: " + dup + ". Descartadas: " + ruim + ".", ok ? "ok" : "bad");
+};
+$("btnCopiar").onclick = function(){
+  var t = lista.map(function(x){ return x.url; }).join("\n");
+  if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(function(){ mensagem("Endereços copiados.", "ok"); }, function(){ mensagem("Não consegui copiar; use Baixar.", "bad"); });
+  else mensagem("Cópia indisponível; use Baixar.", "bad");
+};
+$("btnBaixar").onclick = function(){
+  var b = new Blob([lista.map(function(x){ return x.url; }).join("\n")], {type:"text/plain"});
+  var a = document.createElement("a"); a.href = URL.createObjectURL(b); a.download = "urls.txt"; a.click();
+};
+$("btnCsv").onclick = function(){
+  var b = new Blob([gerarCsv()], {type:"text/csv"});
+  var a = document.createElement("a"); a.href = URL.createObjectURL(b); a.download = "notas_qr.csv"; a.click();
+};
+$("btnShare").onclick = function(){
+  if (!lista.length){ mensagem("A lista está vazia.", "bad"); return; }
+  var arq;
+  try{ arq = new File([gerarCsv()], "notas_qr.csv", {type:"text/csv"}); }catch(e){ mensagem("Este navegador não cria arquivos; use Baixar tabela.", "bad"); return; }
+  if (navigator.canShare && navigator.canShare({files:[arq]})){
+    navigator.share({files:[arq], title:"Notas NFC-e (QR)"}).then(function(){ mensagem("Compartilhado.", "ok"); })
+      .catch(function(e){ if (e && e.name !== "AbortError") mensagem("Não consegui compartilhar: " + e.name, "bad"); });
+  } else { mensagem("Compartilhar arquivo não está disponível aqui; use Baixar tabela.", "bad"); }
+};
+$("btnLimpar").onclick = function(){ if (confirm("Apagar a lista de notas?")){ lista = []; salvar(); desenhar(); } };
+
+carregar(); desenhar(); window.addEventListener("load", ambiente);
+</script>
+</body>
+</html>
